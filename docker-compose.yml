@@ -43,7 +43,7 @@ services:
       - data-platform
 
   prefect-server:
-    image: prefecthq/prefect:2-python3.12
+    image: prefecthq/prefect:3-python3.12
     container_name: prefect-server
     depends_on:
       postgres-prefect:
@@ -68,7 +68,7 @@ services:
       - data-platform
 
   prefect-worker:
-    image: prefecthq/prefect:2-python3.12
+    build: ./prefect
     container_name: prefect-worker
     env_file:
       - .env
@@ -84,7 +84,8 @@ services:
       PREFECT_PROFILES_PATH: /root/.prefect/profiles.toml
     command: prefect worker start --pool default-agent-pool
     volumes:
-      - prefect-data:/root/.prefect
+      - ./prefect:/opt/prefect-code
+    working_dir: /opt/prefect-code
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:4200/api/health || exit 1"]
       interval: 30s
@@ -115,7 +116,7 @@ services:
     restart: unless-stopped
     networks:
       - data-platform
-      
+
   api-data:
     image: postgres:16
     container_name: api-data

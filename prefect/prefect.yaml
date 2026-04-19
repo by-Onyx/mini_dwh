@@ -1,0 +1,14 @@
+name: simple-dlh-project
+prefect-version: 3.1.0
+
+# --- Описание вашего развертывания (деплоймента) ---
+deployments:
+  - name: etl_deployment       # Уникальное имя деплоймента
+    entrypoint: ./etl/mockapi_users_etl.py:users_etl_flow  # Путь:Имя_вашего_flow
+    work_pool:
+      name: default-agent-pool           # Имя вашего work pool (см. Шаг 3)
+
+    # 🗓️ --- Настройка расписания (cron) ---
+    schedule:
+      cron: "0 */1 * * *"   # ЗАМЕНИТЕ на ваше расписание!
+      timezone: "Europe/Moscow" # Укажите вашу временную зону
