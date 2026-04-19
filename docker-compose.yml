@@ -117,6 +117,18 @@ services:
     networks:
       - data-platform
 
+  dwh-data-migration:
+    image: flyway/flyway:latest
+    container_name: dwh-data-migration
+    command: -url=jdbc:postgresql://postgres-data:5432/${DATA_POSTGRES_DB} -user=${DATA_POSTGRES_USER} -password=${DATA_POSTGRES_PASSWORD} migrate
+    depends_on:
+      postgres-data:
+        condition: service_healthy   # ждём, пока БД примет соединения
+    volumes:
+      - ./migrations/dwh/postgresql:/flyway/sql     # монтируем папку с SQL‑миграциями
+    networks:
+      - data-platform
+
   api-data:
     image: postgres:16
     container_name: api-data
@@ -135,6 +147,18 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    networks:
+      - data-platform
+
+  api-data-migration:
+    image: flyway/flyway:latest
+    container_name: api-data-migration
+    command: -url=jdbc:postgresql://api-data:5432/${API_POSTGRES_DB} -user=${API_POSTGRES_USER} -password=${API_POSTGRES_PASSWORD} migrate
+    depends_on:
+      api-data:
+        condition: service_healthy   # ждём, пока БД примет соединения
+    volumes:
+      - ./migrations/api-data:/flyway/sql     # монтируем папку с SQL‑миграциями
     networks:
       - data-platform
 
@@ -163,6 +187,21 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+    networks:
+      - data-platform
+
+  clickhouse-migration:
+    image: migrate/migrate:v4.17.0
+    container_name: clickhouse-migration
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./migrations/dwh/clickhouse:/migrations     # монтируем папку с SQL‑миграциями
+    command: -path=/migrations -database "clickhouse://clickhouse:8123?username=${CLICKHOUSE_USER}&password=${CLICKHOUSE_PASSWORD}&database=${CLICKHOUSE_DB}" up
+    restart: "no"
     networks:
       - data-platform
 
