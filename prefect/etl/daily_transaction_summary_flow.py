@@ -2,7 +2,7 @@ from prefect import flow, task
 import pandas as pd
 from sqlalchemy import create_engine, text
 from datetime import date, timedelta
-from config import config
+from etl_config import config
 from etl_helpers import pg_connection, load_to_clickhouse
 
 @task

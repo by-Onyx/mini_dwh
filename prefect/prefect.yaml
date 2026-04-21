@@ -3,7 +3,7 @@ prefect-version: 3.1.0
 
 # --- Описание вашего развертывания (деплоймента) ---
 deployments:
-  - name: etl_deployment       # Уникальное имя деплоймента
+  - name: mockapi_users_etl_deployment       # Уникальное имя деплоймента
     entrypoint: ./etl/mockapi_users_etl.py:users_etl_flow  # Путь:Имя_вашего_flow
     work_pool:
       name: default-agent-pool           # Имя вашего work pool (см. Шаг 3)
@@ -12,3 +12,27 @@ deployments:
     schedule:
       cron: "0 */1 * * *"   # ЗАМЕНИТЕ на ваше расписание!
       timezone: "Europe/Moscow" # Укажите вашу временную зону
+
+  - name: user_risk_profile_flow_deployment
+    entrypoint: ./etl/user_risk_profile_flow.py:user_risk_profile_flow
+    work_pool:
+      name: default-agent-pool
+    schedule:
+      cron: "5 */1 * * *"
+      timezone: "Europe/Moscow"
+
+  - name: daily_transaction_summary_flow_deployment
+    entrypoint: ./etl/daily_transaction_summary_flow.py:daily_transaction_summary_flow
+    work_pool:
+      name: default-agent-pool
+    schedule:
+      cron: "10 */1 * * *"
+      timezone: "Europe/Moscow"
+
+  - name: account_balance_snapshot_flow_deployment
+    entrypoint: ./etl/account_balance_snapshot_flow.py:account_balance_snapshot_flow
+    work_pool:
+      name: default-agent-pool
+    schedule:
+      cron: "15 */1 * * *"
+      timezone: "Europe/Moscow"

@@ -1,7 +1,7 @@
 from prefect import flow, task
 import pandas as pd
 from sqlalchemy import create_engine, text
-from config import config
+from etl_config import config
 from etl_helpers import pg_connection
 
 @task
