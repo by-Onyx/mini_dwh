@@ -24,4 +24,4 @@ jobs:
             cd ${{ secrets.PROJECT_FOLDER }}
             git checkout main
             git pull origin main
-            docker exec -it prefect-worker prefect --no-prompt deploy --all
+            docker exec prefect-worker prefect --no-prompt deploy --all
