@@ -116,9 +116,8 @@ def load_summary_to_clickhouse(df: pd.DataFrame, table_name: str = "daily_transa
     load_to_clickhouse(df, f"trnx_marts.{table_name}")
 
 @flow(name="daily_transaction_summary_mart", log_prints=True)
-def daily_transaction_summary_flow(execution_date: date = None):
-    if execution_date is None:
-        execution_date = date.today() - timedelta(days=1)  # Default to yesterday
+def daily_transaction_summary_flow():
+    execution_date = date.today() - timedelta(days=1)  # Default to yesterday
 
     print(f"\n=== Building Daily Transaction Summary for {execution_date} ===\n")
 

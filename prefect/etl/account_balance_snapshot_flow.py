@@ -75,9 +75,8 @@ def load_snapshot_to_clickhouse(df: pd.DataFrame):
     load_to_clickhouse(df, "trnx_marts.account_balance_snapshot")
 
 @flow(name="account_balance_snapshot_mart", log_prints=True)
-def account_balance_snapshot_flow(snapshot_date: date = None):
-    if snapshot_date is None:
-        snapshot_date = date.today()
+def account_balance_snapshot_flow():
+    snapshot_date = date.today()
     print(f"\n=== Taking account balance snapshot for {snapshot_date} ===\n")
     df = snapshot_account_balances(snapshot_date)
     load_snapshot_to_postgres(df)
