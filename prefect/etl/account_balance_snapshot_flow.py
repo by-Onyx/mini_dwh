@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import date, timedelta
 from sqlalchemy import create_engine, text
 from etl_config import config
-from etl_helpers import pg_connection
+from etl_helpers import pg_connection, load_to_clickhouse
 
 @task
 def snapshot_account_balances(snapshot_date: date) -> pd.DataFrame:
@@ -72,8 +72,7 @@ def load_snapshot_to_clickhouse(df: pd.DataFrame):
         ) ENGINE = MergeTree()
         ORDER BY (account_id, snapshot_date)
     """)
-    config.CH_CLIENT.insert_df("trnx_marts.account_balance_snapshot", df)
-    print("✓ Loaded snapshot to ClickHouse")
+    load_to_clickhouse(df, "trnx_marts.account_balance_snapshot")
 
 @flow(name="account_balance_snapshot_mart", log_prints=True)
 def account_balance_snapshot_flow(snapshot_date: date = None):

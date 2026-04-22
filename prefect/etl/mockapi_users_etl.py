@@ -159,12 +159,3 @@ def users_etl_flow():
     load_to_clickhouse(final_df)
 
     print(f"\n✅ ETL для {config.TABLE} завершён успешно. Загружено {len(final_df)} пользователей.\n")
-
-
-# if __name__ == "__main__":
-#     from prefect.deployments import run_deployment
-
-#     users_etl_flow.deploy(
-
-#     )
-    # run_deployment(name="users-etl/users_etl_flow")

@@ -113,8 +113,7 @@ def load_summary_to_clickhouse(df: pd.DataFrame, table_name: str = "daily_transa
         ) ENGINE = ReplacingMergeTree()
         ORDER BY (txn_date, user_id, currency, payment_method)
     """)
-    config.CH_CLIENT.insert_df(f"trnx_marts.{table_name}", df)
-    print(f"✓ Loaded {len(df)} rows into ClickHouse trnx_marts.{table_name}")
+    load_to_clickhouse(df, f"trnx_marts.{table_name}")
 
 @flow(name="daily_transaction_summary_mart", log_prints=True)
 def daily_transaction_summary_flow(execution_date: date = None):

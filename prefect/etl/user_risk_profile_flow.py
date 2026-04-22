@@ -2,7 +2,7 @@ from prefect import flow, task
 import pandas as pd
 from sqlalchemy import create_engine, text
 from etl_config import config
-from etl_helpers import pg_connection
+from etl_helpers import pg_connection, load_to_clickhouse
 
 @task
 def extract_user_risk_data() -> pd.DataFrame:
@@ -83,8 +83,7 @@ def load_risk_to_clickhouse(df: pd.DataFrame):
         ORDER BY user_id
     """)
     df['updated_at'] = pd.Timestamp.now()
-    config.CH_CLIENT.insert_df("trnx_marts.user_risk_profile", df)
-    print("✓ Loaded risk profiles to ClickHouse")
+    load_to_clickhouse(df, "trnx_marts.user_risk_profile")
 
 @flow(name="user_risk_profile_mart", log_prints=True)
 def user_risk_profile_flow():
