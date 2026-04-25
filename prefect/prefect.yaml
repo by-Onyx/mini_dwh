@@ -13,6 +13,15 @@ deployments:
       cron: "0 */1 * * *"   # ЗАМЕНИТЕ на ваше расписание!
       timezone: "Europe/Moscow" # Укажите вашу временную зону
 
+  - name: mockapi_accounts_etl_deployment
+    entrypoint: ./etl/mockapi_accounts_etl.py:accounts_etl_flow
+    work_pool:
+      name: default-agent-pool
+
+    schedule:
+      cron: "5 */1 * * *"
+      timezone: "Europe/Moscow"
+
   - name: user_risk_profile_flow_deployment
     entrypoint: ./etl/user_risk_profile_flow.py:user_risk_profile_flow
     work_pool:
