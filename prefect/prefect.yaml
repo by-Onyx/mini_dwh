@@ -40,6 +40,15 @@ deployments:
       cron: "6 */1 * * *"
       timezone: "Europe/Moscow"
 
+  - name: mockapi_transactions_etl_deployment
+    entrypoint: ./etl/mockapi_transactions_etl.py:transactions_etl_flow
+    work_pool:
+      name: default-agent-pool
+
+    schedule:
+      cron: "10 */1 * * *"
+      timezone: "Europe/Moscow"
+
   - name: user_risk_profile_flow_deployment
     entrypoint: ./etl/user_risk_profile_flow.py:user_risk_profile_flow
     work_pool:
