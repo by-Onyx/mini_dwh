@@ -19,7 +19,25 @@ deployments:
       name: default-agent-pool
 
     schedule:
-      cron: "5 */1 * * *"
+      cron: "2 */1 * * *"
+      timezone: "Europe/Moscow"
+
+  - name: mockapi_payment_cards_etl_deployment
+    entrypoint: ./etl/mockapi_payment_cards_etl.py:payment_cards_etl_flow
+    work_pool:
+      name: default-agent-pool
+
+    schedule:
+      cron: "4 */1 * * *"
+      timezone: "Europe/Moscow"
+
+  - name: mockapi_card_fingerprints_etl_deployment
+    entrypoint: ./etl/mockapi_card_fingerprints_etl.py:card_fingerprints_etl_flow
+    work_pool:
+      name: default-agent-pool
+
+    schedule:
+      cron: "6 */1 * * *"
       timezone: "Europe/Moscow"
 
   - name: user_risk_profile_flow_deployment
