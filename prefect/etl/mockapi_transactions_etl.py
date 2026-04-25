@@ -3,37 +3,42 @@ import pandas as pd
 from minio import Minio
 from sqlalchemy import create_engine, text
 from datetime import datetime, timedelta
+from typing import Optional
 from etl_helpers import pg_connection, load_to_clickhouse
 from etl_config import config
 
-# ====================== CONFIG ======================
-TABLE_NAME = "transactions"
-DAYS_BACK = 7
+TABLE = "transactions"
+DAYS = 7
 
 
-# ====================== TASKS ======================
-@task(retries=3, retry_delay_seconds=10)
-def extract_data(start_date: datetime = None, end_date: datetime = None) -> tuple[pd.DataFrame, datetime, datetime]:
-    """Извлечение данных за период"""
-    end_date = end_date or datetime.now()
-    start_date = start_date or (end_date - timedelta(days=DAYS_BACK))
-
-    with pg_connection("api") as conn:
-        df = pd.read_sql(
-            f"SELECT * FROM {config.SCHEMA_SOURCE}.{TABLE_NAME} WHERE created_at BETWEEN %(start)s AND %(end)s",
-            conn,
-            params={"start": start_date, "end": end_date}
-        )
-
-    # Заменяем None и NaT на None для корректной вставки в PostgreSQL
-    df = df.where(pd.notnull(df), None)
-
-    print(f"✓ Извлечено {len(df)} записей за {start_date.date()} - {end_date.date()}")
-    return df, start_date, end_date
+def clean_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Очистка DataFrame от NaT и NaN значений"""
+    df = df.copy()
+    for col in df.columns:
+        if df[col].dtype == 'datetime64[ns]':
+            df[col] = df[col].where(pd.notnull(df[col]), None)
+    return df
 
 
 @task
-def save_to_minio(df: pd.DataFrame, start_date: datetime, end_date: datetime) -> str:
+def extract(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None):
+    """Извлечение данных за период"""
+    end = end_date or datetime.now()
+    start = start_date or (end - timedelta(days=DAYS))
+
+    with pg_connection("api") as conn:
+        df = pd.read_sql(
+            f"SELECT * FROM {config.SCHEMA_SOURCE}.{TABLE} WHERE created_at BETWEEN %s AND %s",
+            conn,
+            params=[start, end]
+        )
+
+    print(f"✓ Извлечено {len(df)} транзакций за {start.date()} - {end.date()}")
+    return clean_df(df), start, end
+
+
+@task
+def to_minio(df: pd.DataFrame, start_date: datetime, end_date: datetime):
     """Сохранение в MinIO"""
     client = Minio(
         config.MINIO_URL,
@@ -44,42 +49,27 @@ def save_to_minio(df: pd.DataFrame, start_date: datetime, end_date: datetime) ->
     if not client.bucket_exists(config.BUCKET):
         client.make_bucket(config.BUCKET)
 
-    object_name = f"stage/{TABLE_NAME}_{start_date:%Y%m%d}_{end_date:%Y%m%d}_{datetime.now():%H%M%S}.parquet"
-    df.to_parquet(f"/tmp/{TABLE_NAME}.parquet", index=False)
-    client.fput_object(config.BUCKET, object_name, f"/tmp/{TABLE_NAME}.parquet")
-
-    print(f"✓ Сохранено в MinIO: {object_name}")
-    return object_name
+    name = f"stage/{TABLE}_{start_date:%Y%m%d}_{end_date:%Y%m%d}_{datetime.now():%H%M%S}.parquet"
+    df.to_parquet("/tmp/t.parquet", index=False)
+    client.fput_object(config.BUCKET, name, "/tmp/t.parquet")
+    print(f"✓ Сохранено в MinIO: {name}")
+    return name
 
 
 @task
-def load_stage(df: pd.DataFrame):
-    """Загрузка в stage таблицу с обработкой NaT"""
-    # Обработка NaT значений в timestamp колонках
-    df_clean = df.copy()
-
-    # Определяем timestamp колонки
-    timestamp_cols = ['created_at', 'processed_at', 'updated_at']
-
-    for col in timestamp_cols:
-        if col in df_clean.columns:
-            # Заменяем NaT на None
-            df_clean[col] = df_clean[col].where(pd.notnull(df_clean[col]), None)
-            # Конвертируем datetime в нужный формат
-            if df_clean[col].dtype == 'datetime64[ns]':
-                df_clean[col] = df_clean[col].apply(lambda x: x if pd.notnull(x) else None)
-
+def to_stage(df: pd.DataFrame):
+    """Загрузка в stage таблицу"""
     with pg_connection("warehouse") as conn:
         with conn.cursor() as cur:
-            cur.execute(f"TRUNCATE TABLE {config.SCHEMA_STAGE}.{TABLE_NAME}")
+            cur.execute(f"TRUNCATE TABLE {config.SCHEMA_STAGE}.{TABLE}")
 
-            cols = df_clean.columns.tolist()
+            cols = df.columns.tolist()
             placeholders = ', '.join(['%s'] * len(cols))
-            sql = f"INSERT INTO {config.SCHEMA_STAGE}.{TABLE_NAME} ({', '.join(cols)}) VALUES ({placeholders})"
+            sql = f"INSERT INTO {config.SCHEMA_STAGE}.{TABLE} ({', '.join(cols)}) VALUES ({placeholders})"
 
-            # Конвертируем все значения в tuple, обрабатывая NaT
+            # Подготовка данных
             data = []
-            for row in df_clean.values:
+            for row in df.to_numpy():
                 converted_row = []
                 for val in row:
                     if pd.isna(val):
@@ -93,81 +83,120 @@ def load_stage(df: pd.DataFrame):
             cur.executemany(sql, data)
             conn.commit()
 
-    print(f"✓ Загружено {len(df_clean)} записей в stage")
+    print(f"✓ Загружено {len(df)} записей в stage")
 
 
 @task
 def merge_to_final():
-    """MERGE через процедуру"""
+    """MERGE данных в final таблицу"""
     engine = create_engine(config.PG_URL)
-    with engine.begin() as conn:
-        conn.execute(
-            text("CALL etl.merge_procedure(:t, :target, :source)"),
-            {"t": TABLE_NAME, "target": config.SCHEMA_FINAL, "source": config.SCHEMA_STAGE}
+
+    # Получаем список колонок
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_schema = :schema AND table_name = :table
+                ORDER BY ordinal_position
+            """),
+            {"schema": config.SCHEMA_FINAL, "table": TABLE}
         )
+        columns = [row[0] for row in result]
+
+    pk_col = 'transaction_id'
+    update_cols = [c for c in columns if c != pk_col]
+    update_set = ', '.join([f"{c} = s.{c}" for c in update_cols])
+    insert_cols = ', '.join(columns)
+    insert_vals = ', '.join([f"s.{c}" for c in columns])
+
+    merge_sql = text(f"""
+        MERGE INTO {config.SCHEMA_FINAL}.{TABLE} t
+        USING {config.SCHEMA_STAGE}.{TABLE} s
+        ON t.{pk_col} = s.{pk_col}
+        WHEN MATCHED THEN UPDATE SET {update_set}
+        WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
+    """)
+
+    with engine.begin() as conn:
+        conn.execute(merge_sql)
 
     # Очищаем stage
     with pg_connection("warehouse") as conn:
         with conn.cursor() as cur:
-            cur.execute(f"TRUNCATE TABLE {config.SCHEMA_STAGE}.{TABLE_NAME}")
+            cur.execute(f"TRUNCATE TABLE {config.SCHEMA_STAGE}.{TABLE}")
             conn.commit()
 
     print(f"✓ MERGE выполнен, stage очищен")
 
 
 @task
-def load_to_ch(start_date: datetime, end_date: datetime):
-    """Загрузка в ClickHouse за тот же период"""
+def to_clickhouse(start_date: datetime, end_date: datetime):
+    """Загрузка в ClickHouse"""
     engine = create_engine(config.PG_URL)
     with engine.connect() as conn:
         df = pd.read_sql(
-            f"SELECT * FROM {config.SCHEMA_FINAL}.{TABLE_NAME} WHERE created_at BETWEEN %s AND %s",
+            f"SELECT * FROM {config.SCHEMA_FINAL}.{TABLE} WHERE created_at BETWEEN %s AND %s",
             conn.connection,
             params=[start_date, end_date]
         )
 
-    if df.empty:
+    if not df.empty:
+        start_str = start_date.strftime('%Y-%m-%d %H:%M:%S')
+        end_str = end_date.strftime('%Y-%m-%d %H:%M:%S')
+        config.CH_CLIENT.command(
+            f"ALTER TABLE trnx.{TABLE} DELETE WHERE created_at BETWEEN '{start_str}' AND '{end_str}'"
+        )
+        load_to_clickhouse(clean_df(df), f"trnx.{TABLE}")
+        print(f"✓ Загружено {len(df)} записей в ClickHouse")
+    else:
         print("✓ Нет данных для ClickHouse")
-        return
-
-    # Обработка NaT для ClickHouse
-    df = df.where(pd.notnull(df), None)
-
-    # Удаляем старые данные за этот период
-    start_str = start_date.strftime('%Y-%m-%d %H:%M:%S')
-    end_str = end_date.strftime('%Y-%m-%d %H:%M:%S')
-    config.CH_CLIENT.command(
-        f"ALTER TABLE trnx.{TABLE_NAME} DELETE WHERE created_at BETWEEN '{start_str}' AND '{end_str}'")
-
-    load_to_clickhouse(df, f"trnx.{TABLE_NAME}")
-    print(f"✓ Загружено {len(df)} записей в ClickHouse")
 
 
 # ====================== FLOW ======================
 @flow(name="Transactions ETL", log_prints=True)
-def transactions_etl_flow(start_date: datetime = None, end_date: datetime = None):
-    """Основной ETL процесс"""
-    print(f"\n=== ЗАГРУЗКА {TABLE_NAME.upper()} ===\n")
+def transactions_etl_flow(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None):
+    """
+    Основной ETL процесс для транзакций
 
-    df, s_date, e_date = extract_data(start_date, end_date)
+    Args:
+        start_date: Начальная дата (опционально, по умолчанию 7 дней назад)
+        end_date: Конечная дата (опционально, по умолчанию сейчас)
+    """
+    print(f"\n=== ЗАГРУЗКА {TABLE.upper()} ===\n")
+
+    df, s_date, e_date = extract(start_date, end_date)
 
     if df.empty:
         print("Нет данных. Завершение.")
         return
 
-    save_to_minio(df, s_date, e_date)
-    load_stage(df)
+    to_minio(df, s_date, e_date)
+    to_stage(df)
     merge_to_final()
-    load_to_ch(s_date, e_date)
+    to_clickhouse(s_date, e_date)
 
-    # Статистика по дням (только если есть данные)
-    if not df.empty:
-        df['date'] = pd.to_datetime(df['created_at']).dt.date
-        print(f"\n✅ Завершено. Загружено {len(df)} транзакций за {df['date'].nunique()} дней")
-        for date, count in df.groupby('date').size().items():
-            print(f"   {date}: {count}")
+    # Статистика
+    df['date'] = pd.to_datetime(df['created_at']).dt.date
+    print(f"\n✅ Завершено. Загружено {len(df)} транзакций за {df['date'].nunique()} дней")
+    for date, count in df.groupby('date').size().items():
+        print(f"   {date}: {count}")
     print()
 
 
+# ====================== ЗАПУСК ======================
 if __name__ == "__main__":
+    # Вариант 1: Без параметров - последние 7 дней
     transactions_etl_flow()
+
+    # Вариант 2: С конкретными датами
+    # transactions_etl_flow(
+    #     start_date=datetime(2024, 1, 1),
+    #     end_date=datetime(2024, 1, 31)
+    # )
+
+    # Вариант 3: Только start_date (end_date = сейчас)
+    # transactions_etl_flow(start_date=datetime(2024, 1, 1))
+
+    # Вариант 4: Только end_date (start_date = end_date - 7 дней)
+    # transactions_etl_flow(end_date=datetime(2024, 1, 31))
