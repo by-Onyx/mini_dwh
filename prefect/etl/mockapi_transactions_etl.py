@@ -25,6 +25,9 @@ def extract_data(start_date: datetime = None, end_date: datetime = None) -> tupl
             params={"start": start_date, "end": end_date}
         )
 
+    # Заменяем None и NaT на None для корректной вставки в PostgreSQL
+    df = df.where(pd.notnull(df), None)
+
     print(f"✓ Извлечено {len(df)} записей за {start_date.date()} - {end_date.date()}")
     return df, start_date, end_date
 
@@ -32,7 +35,12 @@ def extract_data(start_date: datetime = None, end_date: datetime = None) -> tupl
 @task
 def save_to_minio(df: pd.DataFrame, start_date: datetime, end_date: datetime) -> str:
     """Сохранение в MinIO"""
-    client = Minio(config.MINIO_URL, access_key=config.MINIO_USER, secret_key=config.MINIO_PASS, secure=False)
+    client = Minio(
+        config.MINIO_URL,
+        access_key=config.MINIO_USER,
+        secret_key=config.MINIO_PASS,
+        secure=False
+    )
     if not client.bucket_exists(config.BUCKET):
         client.make_bucket(config.BUCKET)
 
@@ -46,17 +54,46 @@ def save_to_minio(df: pd.DataFrame, start_date: datetime, end_date: datetime) ->
 
 @task
 def load_stage(df: pd.DataFrame):
-    """Загрузка в stage таблицу"""
+    """Загрузка в stage таблицу с обработкой NaT"""
+    # Обработка NaT значений в timestamp колонках
+    df_clean = df.copy()
+
+    # Определяем timestamp колонки
+    timestamp_cols = ['created_at', 'processed_at', 'updated_at']
+
+    for col in timestamp_cols:
+        if col in df_clean.columns:
+            # Заменяем NaT на None
+            df_clean[col] = df_clean[col].where(pd.notnull(df_clean[col]), None)
+            # Конвертируем datetime в нужный формат
+            if df_clean[col].dtype == 'datetime64[ns]':
+                df_clean[col] = df_clean[col].apply(lambda x: x if pd.notnull(x) else None)
+
     with pg_connection("warehouse") as conn:
         with conn.cursor() as cur:
             cur.execute(f"TRUNCATE TABLE {config.SCHEMA_STAGE}.{TABLE_NAME}")
 
-            cols = df.columns.tolist()
-            sql = f"INSERT INTO {config.SCHEMA_STAGE}.{TABLE_NAME} ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))})"
-            cur.executemany(sql, [tuple(row) for row in df.values])
+            cols = df_clean.columns.tolist()
+            placeholders = ', '.join(['%s'] * len(cols))
+            sql = f"INSERT INTO {config.SCHEMA_STAGE}.{TABLE_NAME} ({', '.join(cols)}) VALUES ({placeholders})"
+
+            # Конвертируем все значения в tuple, обрабатывая NaT
+            data = []
+            for row in df_clean.values:
+                converted_row = []
+                for val in row:
+                    if pd.isna(val):
+                        converted_row.append(None)
+                    elif isinstance(val, pd.Timestamp):
+                        converted_row.append(val.to_pydatetime())
+                    else:
+                        converted_row.append(val)
+                data.append(tuple(converted_row))
+
+            cur.executemany(sql, data)
             conn.commit()
 
-    print(f"✓ Загружено {len(df)} записей в stage")
+    print(f"✓ Загружено {len(df_clean)} записей в stage")
 
 
 @task
@@ -64,8 +101,10 @@ def merge_to_final():
     """MERGE через процедуру"""
     engine = create_engine(config.PG_URL)
     with engine.begin() as conn:
-        conn.execute(text("CALL etl.merge_procedure(:t, :target, :source)"),
-                     {"t": TABLE_NAME, "target": config.SCHEMA_FINAL, "source": config.SCHEMA_STAGE})
+        conn.execute(
+            text("CALL etl.merge_procedure(:t, :target, :source)"),
+            {"t": TABLE_NAME, "target": config.SCHEMA_FINAL, "source": config.SCHEMA_STAGE}
+        )
 
     # Очищаем stage
     with pg_connection("warehouse") as conn:
@@ -81,16 +120,25 @@ def load_to_ch(start_date: datetime, end_date: datetime):
     """Загрузка в ClickHouse за тот же период"""
     engine = create_engine(config.PG_URL)
     with engine.connect() as conn:
-        df = pd.read_sql(f"SELECT * FROM {config.SCHEMA_FINAL}.{TABLE_NAME} WHERE created_at BETWEEN %s AND %s",
-                         conn.connection, params=[start_date, end_date])
+        df = pd.read_sql(
+            f"SELECT * FROM {config.SCHEMA_FINAL}.{TABLE_NAME} WHERE created_at BETWEEN %s AND %s",
+            conn.connection,
+            params=[start_date, end_date]
+        )
 
     if df.empty:
         print("✓ Нет данных для ClickHouse")
         return
 
+    # Обработка NaT для ClickHouse
+    df = df.where(pd.notnull(df), None)
+
     # Удаляем старые данные за этот период
+    start_str = start_date.strftime('%Y-%m-%d %H:%M:%S')
+    end_str = end_date.strftime('%Y-%m-%d %H:%M:%S')
     config.CH_CLIENT.command(
-        f"ALTER TABLE trnx.{TABLE_NAME} DELETE WHERE created_at BETWEEN '{start_date}' AND '{end_date}'")
+        f"ALTER TABLE trnx.{TABLE_NAME} DELETE WHERE created_at BETWEEN '{start_str}' AND '{end_str}'")
+
     load_to_clickhouse(df, f"trnx.{TABLE_NAME}")
     print(f"✓ Загружено {len(df)} записей в ClickHouse")
 
@@ -112,17 +160,14 @@ def transactions_etl_flow(start_date: datetime = None, end_date: datetime = None
     merge_to_final()
     load_to_ch(s_date, e_date)
 
-    # Статистика по дням
-    df['date'] = pd.to_datetime(df['created_at']).dt.date
-    print(f"\n✅ Завершено. Загружено {len(df)} транзакций за {df['date'].nunique()} дней")
-    for date, count in df.groupby('date').size().items():
-        print(f"   {date}: {count}")
+    # Статистика по дням (только если есть данные)
+    if not df.empty:
+        df['date'] = pd.to_datetime(df['created_at']).dt.date
+        print(f"\n✅ Завершено. Загружено {len(df)} транзакций за {df['date'].nunique()} дней")
+        for date, count in df.groupby('date').size().items():
+            print(f"   {date}: {count}")
     print()
 
 
 if __name__ == "__main__":
-    # За последние 7 дней
     transactions_etl_flow()
-
-    # За произвольный период
-    # transactions_etl_flow(start_date=datetime(2024, 1, 1), end_date=datetime(2024, 1, 31))
