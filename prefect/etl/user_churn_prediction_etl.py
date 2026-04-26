@@ -77,30 +77,32 @@ def extract_from_postgres(calculation_date: datetime) -> pd.DataFrame:
 
     logger.info(f"Извлечение данных прогноза за {calculation_date}")
 
-    with pg_connection("warehouse") as conn:
-        df = pd.read_sql(
-            text("""
-                SELECT 
-                    prediction_id,
-                    calculation_date,
-                    user_id,
-                    user_age_days,
-                    total_transactions,
-                    days_since_last_txn,
-                    avg_transaction_amount,
-                    failed_transactions,
-                    churn_probability,
-                    churn_risk_category,
-                    is_blocked,
-                    prediction_date,
-                    model_version
-                FROM trnx.user_churn_prediction
-                WHERE calculation_date = :calc_date
-                ORDER BY churn_probability DESC
-            """),
-            conn,
-            params={"calc_date": calculation_date}
-        )
+    # Используем create_engine вместо pg_connection для совместимости с pandas
+    engine = create_engine(config.PG_URL)
+
+    with engine.connect() as conn:
+        # Формируем строку запроса (не используем text() для pandas)
+        query = f"""
+            SELECT 
+                prediction_id,
+                calculation_date,
+                user_id,
+                user_age_days,
+                total_transactions,
+                days_since_last_txn,
+                avg_transaction_amount,
+                failed_transactions,
+                churn_probability,
+                churn_risk_category,
+                is_blocked,
+                prediction_date,
+                model_version
+            FROM trnx.user_churn_prediction
+            WHERE calculation_date = '{calculation_date}'
+            ORDER BY churn_probability DESC
+        """
+
+        df = pd.read_sql(query, conn)
 
     logger.info(f"Извлечено {len(df)} записей из PostgreSQL")
     return df
@@ -111,6 +113,10 @@ def clean_for_clickhouse(df: pd.DataFrame) -> pd.DataFrame:
     """Очистка DataFrame для ClickHouse"""
     logger = get_run_logger()
     df = df.copy()
+
+    # Удаляем prediction_id для ClickHouse
+    if 'prediction_id' in df.columns:
+        df = df.drop(columns=['prediction_id'])
 
     # Заменяем NaN на подходящие значения
     for col in df.columns:
@@ -130,10 +136,6 @@ def clean_for_clickhouse(df: pd.DataFrame) -> pd.DataFrame:
     # Конвертируем boolean в int для ClickHouse
     if 'is_blocked' in df.columns:
         df['is_blocked'] = df['is_blocked'].astype(int)
-
-    # Удаляем prediction_id для ClickHouse (если не нужен)
-    if 'prediction_id' in df.columns:
-        df = df.drop(columns=['prediction_id'])
 
     logger.info(f"Подготовлено {len(df)} записей для ClickHouse")
     return df
@@ -201,8 +203,6 @@ def user_churn_prediction_flow(
     2. Извлечение результатов
     3. Загрузка в ClickHouse
     """
-    logger = get_run_logger()
-
     print(f"\n{'=' * 60}")
     print(f" ПРОГНОЗИРОВАНИЕ ОТТОКА ПОЛЬЗОВАТЕЛЕЙ")
     print(f"{'=' * 60}\n")
@@ -219,7 +219,7 @@ def user_churn_prediction_flow(
     total_predictions = result['total_predictions']
 
     if total_predictions == 0:
-        logger.error("❌ Нет данных для прогнозирования. Завершение.")
+        print("❌ Нет данных для прогнозирования. Завершение.")
         return
 
     # 2. Извлекаем данные из PostgreSQL
@@ -239,11 +239,3 @@ def user_churn_prediction_flow(
 if __name__ == "__main__":
     # Запуск с параметрами по умолчанию
     user_churn_prediction_flow()
-
-    # Или с кастомными параметрами:
-    # user_churn_prediction_flow(
-    #     model_version="v2.0",
-    #     lookback_days=60,
-    #     high_risk_threshold=0.75,
-    #     medium_risk_threshold=0.45
-    # )
