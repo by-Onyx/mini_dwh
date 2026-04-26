@@ -11,51 +11,64 @@ TABLE = "transactions"
 DAYS = 7
 
 
-def clean_for_clickhouse(df: pd.DataFrame) -> pd.DataFrame:
-    """Очистка DataFrame для ClickHouse - заменяем NaN на пустые строки или None"""
+def convert_types(df: pd.DataFrame) -> pd.DataFrame:
+    """Конвертация типов данных для PostgreSQL"""
     df = df.copy()
 
-    for col in df.columns:
-        # Для строковых колонок заменяем NaN на пустую строку
-        if df[col].dtype == 'object':
-            df[col] = df[col].fillna('')
-            df[col] = df[col].astype(str)
-            # Заменяем 'nan' и 'None' на пустую строку
-            df[col] = df[col].replace(['nan', 'None', 'NaN'], '')
+    # Определяем типы колонок для final таблицы
+    column_types = {
+        'transaction_id': 'int64',
+        'user_id': 'int64',
+        'account_id': 'int64',
+        'amount': 'float64',
+        'currency': 'object',
+        'payment_method': 'object',
+        'card_id': 'int64',
+        'cash_terminal_id': 'object',
+        'status': 'object',
+        'type': 'object',
+        'retry_count': 'int64',
+        'last_error': 'object',
+        'external_txn_id': 'object',
+        'created_at': 'datetime64[ns]',
+        'processed_at': 'datetime64[ns]',
+        'updated_at': 'datetime64[ns]'
+    }
 
-        # Для числовых колонок заменяем NaN на None (NULL в ClickHouse)
-        elif df[col].dtype in ['float64', 'float32', 'int64', 'int32']:
-            df[col] = df[col].where(pd.notnull(df[col]), None)
-            # Для float заменяем NaN на None
-            if df[col].dtype == 'float64':
-                df[col] = df[col].apply(lambda x: None if pd.isna(x) else x)
+    for col, dtype in column_types.items():
+        if col in df.columns:
+            if dtype == 'int64':
+                # Для BIGINT: конвертируем в число, убираем .0
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df[col] = df[col].fillna(0).astype('int64')
+                # Убираем .0 если значение - число с плавающей точкой
+                df[col] = df[col].apply(lambda x: int(float(x)) if pd.notnull(x) else None)
 
-        # Для datetime колонок
-        elif df[col].dtype == 'datetime64[ns]':
-            df[col] = df[col].where(pd.notnull(df[col]), None)
+            elif dtype == 'float64':
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df[col] = df[col].where(pd.notnull(df[col]), None)
+
+            elif dtype == 'datetime64[ns]':
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+                df[col] = df[col].where(pd.notnull(df[col]), None)
+
+            elif dtype == 'object':
+                df[col] = df[col].astype(str)
+                df[col] = df[col].replace(['nan', 'None', 'NaN', 'NaT', 'nat'], None)
+                df[col] = df[col].apply(lambda x: None if x in ['nan', 'None', 'NaN', 'NaT', 'nat', ''] else x)
 
     return df
 
 
 def clean_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Очистка DataFrame от NaT и NaN значений для PostgreSQL"""
+    """Очистка DataFrame от NaT и NaN значений"""
     df = df.copy()
 
     # Конвертируем enum колонки в строки
     for col in ['payment_method', 'status', 'type']:
         if col in df.columns:
             df[col] = df[col].astype(str)
-
-    # Обработка timestamp колонок
-    for col in df.columns:
-        if df[col].dtype == 'datetime64[ns]':
-            df[col] = df[col].where(pd.notnull(df[col]), None)
-        elif df[col].dtype == 'float64':
-            df[col] = df[col].where(pd.notnull(df[col]), None)
-        elif df[col].dtype == 'object':
-            df[col] = df[col].fillna('')
-            df[col] = df[col].astype(str)
-            df[col] = df[col].replace(['nan', 'None', 'NaN'], '')
+            df[col] = df[col].replace(['nan', 'None', 'NaN'], 'card')
 
     return df
 
@@ -74,7 +87,11 @@ def extract(start_date: Optional[datetime] = None, end_date: Optional[datetime] 
         )
 
     print(f"✓ Извлечено {len(df)} транзакций за {start.date()} - {end.date()}")
-    return clean_df(df), start, end
+
+    # Применяем конвертацию типов
+    df = convert_types(df)
+
+    return df, start, end
 
 
 @task
@@ -97,31 +114,65 @@ def to_minio(df: pd.DataFrame, start_date: datetime, end_date: datetime):
 
 @task
 def to_stage(df: pd.DataFrame):
-    """Загрузка в stage таблицу"""
+    """Загрузка в stage таблицу с правильными типами"""
+    df_clean = df.copy()
+
     with pg_connection("warehouse") as conn:
         with conn.cursor() as cur:
             cur.execute(f"TRUNCATE TABLE {config.SCHEMA_STAGE}.{TABLE}")
 
-            cols = df.columns.tolist()
+            cols = df_clean.columns.tolist()
             placeholders = ', '.join(['%s'] * len(cols))
             sql = f"INSERT INTO {config.SCHEMA_STAGE}.{TABLE} ({', '.join(cols)}) VALUES ({placeholders})"
 
             data = []
-            for row in df.to_numpy():
+            for idx, row in df_clean.iterrows():
                 converted_row = []
-                for val in row:
-                    if pd.isna(val):
+                for col in cols:
+                    val = row[col]
+
+                    # Обработка разных типов
+                    if pd.isna(val) or val == 'nan' or val == 'None' or val == '':
                         converted_row.append(None)
-                    elif isinstance(val, pd.Timestamp):
-                        converted_row.append(val.to_pydatetime())
+                    elif col in ['transaction_id', 'user_id', 'account_id', 'retry_count']:
+                        # BIGINT поля - конвертируем в int
+                        try:
+                            # Убираем .0 если есть
+                            if isinstance(val, float) and val.is_integer():
+                                converted_row.append(int(val))
+                            elif isinstance(val, str) and '.' in val:
+                                converted_row.append(int(float(val)))
+                            else:
+                                converted_row.append(int(val) if val is not None else None)
+                        except (ValueError, TypeError):
+                            converted_row.append(None)
+                    elif col == 'amount':
+                        # DECIMAL поле
+                        try:
+                            converted_row.append(float(val) if val is not None else None)
+                        except (ValueError, TypeError):
+                            converted_row.append(None)
+                    elif col in ['created_at', 'processed_at', 'updated_at']:
+                        # TIMESTAMP поля
+                        if isinstance(val, pd.Timestamp):
+                            converted_row.append(val.to_pydatetime())
+                        elif isinstance(val, datetime):
+                            converted_row.append(val)
+                        else:
+                            try:
+                                converted_row.append(pd.to_datetime(val).to_pydatetime() if val else None)
+                            except:
+                                converted_row.append(None)
                     else:
+                        # TEXT поля
                         converted_row.append(str(val) if val is not None else None)
+
                 data.append(tuple(converted_row))
 
             cur.executemany(sql, data)
             conn.commit()
 
-    print(f"✓ Загружено {len(df)} записей в stage")
+    print(f"✓ Загружено {len(data)} записей в stage")
 
 
 @task
@@ -173,10 +224,22 @@ def to_clickhouse(start_date: datetime, end_date: datetime):
         )
 
     if not df.empty:
-        # Очищаем данные специально для ClickHouse
-        df_clean = clean_for_clickhouse(df)
-        load_to_clickhouse(df_clean, f"trnx.{TABLE}")
-        print(f"✓ Загружено {len(df_clean)} записей в ClickHouse")
+        # Конвертируем типы для ClickHouse
+        for col in df.columns:
+            if col in ['transaction_id', 'user_id', 'account_id', 'card_id', 'retry_count']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df[col] = df[col].fillna(0).astype('int64')
+            elif col == 'amount':
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df[col] = df[col].fillna(0.0)
+            elif col in ['created_at', 'processed_at', 'updated_at']:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+            else:
+                df[col] = df[col].astype(str).fillna('')
+                df[col] = df[col].replace(['nan', 'None', 'NaN', 'NaT'], '')
+
+        load_to_clickhouse(df, f"trnx.{TABLE}")
+        print(f"✓ Загружено {len(df)} записей в ClickHouse")
 
 
 # ====================== FLOW ======================
@@ -192,6 +255,9 @@ def transactions_etl_flow(start_date: Optional[datetime] = None, end_date: Optio
     if df.empty:
         print("❌ Нет данных за указанный период. Завершение.")
         return
+
+    print(f"\nТипы данных после конвертации:")
+    print(df.dtypes)
 
     to_minio(df, s_date, e_date)
     to_stage(df)
