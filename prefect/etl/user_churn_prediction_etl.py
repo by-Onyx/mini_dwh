@@ -33,7 +33,7 @@ def execute_churn_procedure(
 
         conn.execute(
             text("""
-                CALL trnx_final.calculate_user_churn_prediction(
+                CALL trnx.calculate_user_churn_prediction(
                     :model_version,
                     :lookback_days,
                     :high_threshold,
@@ -55,7 +55,7 @@ def execute_churn_procedure(
                 SELECT 
                     MAX(calculation_date) as calculation_date,
                     COUNT(*) as total_predictions
-                FROM trnx_final.user_churn_prediction
+                FROM trnx.user_churn_prediction
             """)
         ).fetchone()
 
@@ -94,7 +94,7 @@ def extract_from_postgres(calculation_date: datetime) -> pd.DataFrame:
                     is_blocked,
                     prediction_date,
                     model_version
-                FROM trnx_final.user_churn_prediction
+                FROM trnx.user_churn_prediction
                 WHERE calculation_date = :calc_date
                 ORDER BY churn_probability DESC
             """),
