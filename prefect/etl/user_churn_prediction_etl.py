@@ -1,10 +1,8 @@
-# etl_user_churn_prediction.py
 from prefect import task, flow, get_run_logger
 import pandas as pd
-import numpy as np
 from sqlalchemy import create_engine, text
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from datetime import datetime
+from typing import Dict, Any
 from etl_helpers import pg_connection, load_to_clickhouse
 from etl_config import config
 
@@ -77,11 +75,9 @@ def extract_from_postgres(calculation_date: datetime) -> pd.DataFrame:
 
     logger.info(f"Извлечение данных прогноза за {calculation_date}")
 
-    # Используем create_engine вместо pg_connection для совместимости с pandas
     engine = create_engine(config.PG_URL)
 
     with engine.connect() as conn:
-        # Формируем строку запроса (не используем text() для pandas)
         query = f"""
             SELECT 
                 prediction_id,
@@ -110,7 +106,7 @@ def extract_from_postgres(calculation_date: datetime) -> pd.DataFrame:
 
 @task
 def clean_for_clickhouse(df: pd.DataFrame) -> pd.DataFrame:
-    """Очистка DataFrame для ClickHouse"""
+    """Очистка DataFrame для ClickHouse с правильной конвертацией типов"""
     logger = get_run_logger()
     df = df.copy()
 
@@ -118,24 +114,48 @@ def clean_for_clickhouse(df: pd.DataFrame) -> pd.DataFrame:
     if 'prediction_id' in df.columns:
         df = df.drop(columns=['prediction_id'])
 
-    # Заменяем NaN на подходящие значения
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            df[col] = df[col].fillna('')
-            df[col] = df[col].astype(str)
-            df[col] = df[col].replace(['nan', 'None', 'NaN', 'NaT'], '')
-        elif df[col].dtype == 'float64':
-            df[col] = df[col].fillna(0)
-        elif df[col].dtype == 'int64':
-            df[col] = df[col].fillna(0)
-        elif df[col].dtype == 'datetime64[ns]':
+    # Конвертируем datetime поля
+    datetime_columns = ['calculation_date', 'prediction_date']
+    for col in datetime_columns:
+        if col in df.columns:
+            # Преобразуем в datetime
+            df[col] = pd.to_datetime(df[col])
+            # Заменяем NaT на текущую дату
             df[col] = df[col].fillna(pd.Timestamp.now())
-        elif df[col].dtype == 'bool':
-            df[col] = df[col].fillna(False).astype(int)
+            # Для date полей (prediction_date) оставляем как дату
+            if col == 'prediction_date':
+                df[col] = df[col].dt.date
 
-    # Конвертируем boolean в int для ClickHouse
+    # Конвертируем числовые поля
+    numeric_columns = [
+        'user_id', 'user_age_days', 'total_transactions',
+        'days_since_last_txn', 'failed_transactions'
+    ]
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+
+    # Конвертируем decimal поля
+    decimal_columns = ['avg_transaction_amount', 'churn_probability']
+    for col in decimal_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    # Конвертируем строковые поля
+    string_columns = ['churn_risk_category', 'model_version']
+    for col in string_columns:
+        if col in df.columns:
+            df[col] = df[col].fillna('').astype(str)
+            df[col] = df[col].replace(['nan', 'None', 'NaN', 'NaT'], '')
+
+    # Конвертируем boolean в int
     if 'is_blocked' in df.columns:
-        df['is_blocked'] = df['is_blocked'].astype(int)
+        df['is_blocked'] = df['is_blocked'].astype(bool).astype(int)
+
+    # Проверяем и выводим типы данных для отладки
+    logger.info("Типы данных после очистки:")
+    for col in df.columns:
+        logger.info(f"  {col}: {df[col].dtype}")
 
     logger.info(f"Подготовлено {len(df)} записей для ClickHouse")
     return df
@@ -152,10 +172,16 @@ def load_to_clickhouse_table(df: pd.DataFrame):
 
     df_clean = clean_for_clickhouse(df)
 
-    # Загружаем в ClickHouse
-    load_to_clickhouse(df_clean, f"trnx.{TABLE}")
-
-    logger.info(f"Загружено {len(df_clean)} записей в ClickHouse таблицу trnx.{TABLE}")
+    try:
+        # Загружаем в ClickHouse
+        load_to_clickhouse(df_clean, f"trnx.{TABLE}")
+        logger.info(f"Загружено {len(df_clean)} записей в ClickHouse таблицу trnx.{TABLE}")
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке в ClickHouse: {e}")
+        # Выводим информацию о проблемных данных
+        logger.error(f"DataFrame info:\n{df_clean.dtypes}")
+        logger.error(f"First row sample:\n{df_clean.iloc[0].to_dict()}")
+        raise
 
 
 @task
@@ -184,7 +210,6 @@ def log_statistics(df: pd.DataFrame, calculation_date: datetime):
             logger.info(f"  - Средняя неактивность: {row['days_since_last_txn']:.1f} дней")
             logger.info("")
 
-    # Особое внимание на high risk
     high_risk_count = len(df[df['churn_risk_category'] == 'HIGH_RISK_CHURN'])
     if high_risk_count > 100:
         logger.warning(f"ВНИМАНИЕ: {high_risk_count} пользователей в зоне высокого риска оттока!")
