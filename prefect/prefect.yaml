@@ -49,6 +49,24 @@ deployments:
       cron: "10 */1 * * *"
       timezone: "Europe/Moscow"
 
+  - name: mockapi_transaction_pipeline_log_etl_deployment
+    entrypoint: ./etl/mockapi_transaction_pipeline_log_etl.py:transaction_pipeline_log_etl_flow
+    work_pool:
+      name: default-agent-pool
+
+    schedule:
+      cron: "15 */1 * * *"
+      timezone: "Europe/Moscow"
+
+  - name: mockapi_transaction_retry_queue_etl_deployment
+    entrypoint: ./etl/mockapi_transaction_retry_queue_etl.py:transaction_retry_queue_etl_flow
+    work_pool:
+      name: default-agent-pool
+
+    schedule:
+      cron: "10 */1 * * *"
+      timezone: "Europe/Moscow"
+
   - name: user_risk_profile_flow_deployment
     entrypoint: ./etl/user_risk_profile_flow.py:user_risk_profile_flow
     work_pool:
