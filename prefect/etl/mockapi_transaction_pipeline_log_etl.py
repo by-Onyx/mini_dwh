@@ -117,7 +117,7 @@ def merge_to_final():
     engine = create_engine(config.PG_URL)
 
     merge_sql = text("""
-        INSERT INTO trnx_final.transaction_pipeline_log 
+        INSERT INTO trnx_final.transaction_pipeline_log
         SELECT * FROM trnx_stage.transaction_pipeline_log
         ON CONFLICT (log_id) DO UPDATE SET
             transaction_id = EXCLUDED.transaction_id,
@@ -181,7 +181,7 @@ def to_clickhouse(start_date: datetime, end_date: datetime):
 
 
 @flow(name="Transaction Pipeline Log ETL", log_prints=True)
-def transaction_pipeline_log_flow(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None):
+def transaction_pipeline_log_etl_flow(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None):
     """Основной ETL процесс для логов pipeline'а транзакций"""
     print(f"\n{'=' * 60}")
     print(f" ЗАГРУЗКА ТАБЛИЦЫ: {TABLE}")
@@ -202,4 +202,4 @@ def transaction_pipeline_log_flow(start_date: Optional[datetime] = None, end_dat
 
 
 if __name__ == "__main__":
-    transaction_pipeline_log_flow()
+    transaction_pipeline_log_etl_flow()
