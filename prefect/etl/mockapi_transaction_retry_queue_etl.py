@@ -113,7 +113,7 @@ def merge_to_final():
     engine = create_engine(config.PG_URL)
 
     merge_sql = text("""
-        INSERT INTO trnx_final.transaction_retry_queue 
+        INSERT INTO trnx_final.transaction_retry_queue
         SELECT * FROM trnx_stage.transaction_retry_queue
         ON CONFLICT (retry_id) DO UPDATE SET
             transaction_id = EXCLUDED.transaction_id,
@@ -173,7 +173,7 @@ def to_clickhouse(start_date: datetime, end_date: datetime):
 
 
 @flow(name="Transaction Retry Queue ETL", log_prints=True)
-def transaction_retry_queue_flow(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None):
+def transaction_retry_queue_etl_flow(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None):
     """Основной ETL процесс для очереди повторных попыток транзакций"""
     print(f"\n{'=' * 60}")
     print(f" ЗАГРУЗКА ТАБЛИЦЫ: {TABLE}")
@@ -194,4 +194,4 @@ def transaction_retry_queue_flow(start_date: Optional[datetime] = None, end_date
 
 
 if __name__ == "__main__":
-    transaction_retry_queue_flow()
+    transaction_retry_queue_etl_flow()
