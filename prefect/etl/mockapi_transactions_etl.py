@@ -122,9 +122,9 @@ def to_stage(df: pd.DataFrame):
                         converted_row.append(None)
                     elif isinstance(val, pd.Timestamp):
                         converted_row.append(val.to_pydatetime())
-                    elif isinstance(val, (np.int64, np.int32, int)):
+                    elif isinstance(val, int):
                         converted_row.append(int(val))
-                    elif isinstance(val, (np.float64, np.float32, float)):
+                    elif isinstance(val, float):
                         # Проверяем, является ли float целым числом
                         if val == int(val):
                             converted_row.append(int(val))
