@@ -51,9 +51,17 @@ def clean_df(df: pd.DataFrame) -> pd.DataFrame:
         if df[col].dtype == 'datetime64[ns]':
             df[col] = df[col].where(pd.notnull(df[col]), None)
         elif df[col].dtype == 'float64':
+            # Проверяем, может ли колонка быть целочисленной
+            # Если все значения - целые числа, конвертируем в int
+            if df[col].notna().all() and (df[col].dropna() == df[col].dropna().astype(int)).all():
+                df[col] = df[col].astype('Int64')  # nullable int
+            else:
+                df[col] = df[col].where(pd.notnull(df[col]), None)
+        elif df[col].dtype == 'int64':
             df[col] = df[col].where(pd.notnull(df[col]), None)
         elif df[col].dtype == 'object':
             df[col] = df[col].fillna('')
+            # Не конвертируем числовые строки в обычные строки без потери типа
             df[col] = df[col].astype(str)
             df[col] = df[col].replace(['nan', 'None', 'NaN'], '')
 
@@ -114,6 +122,14 @@ def to_stage(df: pd.DataFrame):
                         converted_row.append(None)
                     elif isinstance(val, pd.Timestamp):
                         converted_row.append(val.to_pydatetime())
+                    elif isinstance(val, (np.int64, np.int32, int)):
+                        converted_row.append(int(val))
+                    elif isinstance(val, (np.float64, np.float32, float)):
+                        # Проверяем, является ли float целым числом
+                        if val == int(val):
+                            converted_row.append(int(val))
+                        else:
+                            converted_row.append(val)
                     else:
                         converted_row.append(str(val) if val is not None else None)
                 data.append(tuple(converted_row))
