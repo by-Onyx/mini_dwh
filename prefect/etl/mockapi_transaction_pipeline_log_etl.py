@@ -1,6 +1,7 @@
 from prefect import task, flow
 import pandas as pd
 import numpy as np
+import json
 from minio import Minio
 from sqlalchemy import create_engine, text
 from datetime import datetime, timedelta
@@ -21,7 +22,6 @@ def clean_df(df: pd.DataFrame) -> pd.DataFrame:
         if df[col].dtype == 'datetime64[ns]':
             df[col] = df[col].where(pd.notnull(df[col]), None)
         elif df[col].dtype == 'float64':
-            # Проверяем, может ли колонка быть целочисленной
             if df[col].notna().all() and (df[col].dropna() == df[col].dropna().astype(int)).all():
                 df[col] = df[col].astype('Int64')
             else:
@@ -29,15 +29,34 @@ def clean_df(df: pd.DataFrame) -> pd.DataFrame:
         elif df[col].dtype == 'int64':
             df[col] = df[col].where(pd.notnull(df[col]), None)
         elif df[col].dtype == 'object':
-            # Для JSONB колонок не заменяем NaN на пустую строку
+            # Для JSONB колонки - преобразуем в JSON строку
             if col == 'payload':
-                df[col] = df[col].where(pd.notnull(df[col]), None)
+                df[col] = df[col].apply(lambda x: handle_json_field(x))
             else:
                 df[col] = df[col].fillna('')
                 df[col] = df[col].astype(str)
                 df[col] = df[col].replace(['nan', 'None', 'NaN'], '')
 
     return df
+
+
+def handle_json_field(value):
+    """Правильная обработка JSONB полей"""
+    if pd.isna(value) or value is None:
+        return None
+    if isinstance(value, dict):
+        # Если уже словарь, конвертируем в JSON строку
+        return json.dumps(value)
+    if isinstance(value, str):
+        # Если строка, пробуем распарсить и снова преобразовать
+        try:
+            # Проверяем, валидный ли JSON
+            parsed = json.loads(value)
+            return json.dumps(parsed)
+        except:
+            # Если не валидный JSON, возвращаем как есть или пустой объект
+            return json.dumps({"value": str(value)})
+    return json.dumps({"value": str(value)})
 
 
 @task
@@ -101,6 +120,16 @@ def to_stage(df: pd.DataFrame):
                             converted_row.append(int(val))
                         else:
                             converted_row.append(val)
+                    elif isinstance(val, dict):
+                        # Для словарей преобразуем в JSON строку
+                        converted_row.append(json.dumps(val))
+                    elif isinstance(val, str) and val.startswith('{'):
+                        # Пробуем распарсить строку как JSON
+                        try:
+                            parsed = json.loads(val.replace("'", '"'))
+                            converted_row.append(json.dumps(parsed))
+                        except:
+                            converted_row.append(val)
                     else:
                         converted_row.append(str(val) if val is not None else None)
                 data.append(tuple(converted_row))
@@ -117,7 +146,7 @@ def merge_to_final():
     engine = create_engine(config.PG_URL)
 
     merge_sql = text("""
-        INSERT INTO trnx_final.transaction_pipeline_log
+        INSERT INTO trnx_final.transaction_pipeline_log 
         SELECT * FROM trnx_stage.transaction_pipeline_log
         ON CONFLICT (log_id) DO UPDATE SET
             transaction_id = EXCLUDED.transaction_id,
@@ -158,7 +187,7 @@ def to_clickhouse(start_date: datetime, end_date: datetime):
             if col == 'payload':
                 # Для JSONB преобразуем в строку
                 df[col] = df[col].fillna('{}')
-                df[col] = df[col].astype(str)
+                df[col] = df[col].apply(lambda x: json.dumps(x) if isinstance(x, dict) else str(x))
             else:
                 df[col] = df[col].fillna('')
                 df[col] = df[col].astype(str)
@@ -181,7 +210,7 @@ def to_clickhouse(start_date: datetime, end_date: datetime):
 
 
 @flow(name="Transaction Pipeline Log ETL", log_prints=True)
-def transaction_pipeline_log_etl_flow(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None):
+def transaction_pipeline_log_flow(start_date: Optional[datetime] = None, end_date: Optional[datetime] = None):
     """Основной ETL процесс для логов pipeline'а транзакций"""
     print(f"\n{'=' * 60}")
     print(f" ЗАГРУЗКА ТАБЛИЦЫ: {TABLE}")
@@ -202,4 +231,4 @@ def transaction_pipeline_log_etl_flow(start_date: Optional[datetime] = None, end
 
 
 if __name__ == "__main__":
-    transaction_pipeline_log_etl_flow()
+    transaction_pipeline_log_flow()
