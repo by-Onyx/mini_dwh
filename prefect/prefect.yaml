@@ -76,6 +76,15 @@ deployments:
       cron: "0 */2 * * *"
       timezone: "Europe/Moscow"
 
+  - name: mockapi_payment_failure_prediction_etl_deployment
+    entrypoint: ./etl/payment_failure_prediction_etl.py:payment_failure_prediction_flow
+    work_pool:
+      name: default-agent-pool
+
+    schedule:
+      cron: "30 */2 * * *"
+      timezone: "Europe/Moscow"
+
   - name: user_risk_profile_flow_deployment
     entrypoint: ./etl/user_risk_profile_flow.py:user_risk_profile_flow
     work_pool:
