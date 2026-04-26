@@ -64,7 +64,7 @@ deployments:
       name: default-agent-pool
 
     schedule:
-      cron: "10 */1 * * *"
+      cron: "20 */1 * * *"
       timezone: "Europe/Moscow"
 
   - name: user_risk_profile_flow_deployment
