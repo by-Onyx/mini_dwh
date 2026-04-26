@@ -67,6 +67,15 @@ deployments:
       cron: "20 */1 * * *"
       timezone: "Europe/Moscow"
 
+  - name: mockapi_user_churn_prediction_etl_deployment
+    entrypoint: ./etl/user_churn_prediction_etl.py:user_churn_prediction_flow
+    work_pool:
+      name: default-agent-pool
+
+    schedule:
+      cron: "0 */2 * * *"
+      timezone: "Europe/Moscow"
+
   - name: user_risk_profile_flow_deployment
     entrypoint: ./etl/user_risk_profile_flow.py:user_risk_profile_flow
     work_pool:
